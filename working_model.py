@@ -104,8 +104,26 @@ final_tuned_df = pd.DataFrame({'Date': final_forecast_dates.astype(str), 'Tuned_
 print("Final Forecast Results:")
 print(final_tuned_df)
 
-# Save JSON for the website
-final_tuned_df.to_json("finaloccupancy.json", orient="records")
+# Calculate Shortage Risk
+capacity = 80
+over_capacity_days = sum(1 for p in final_forecast if p > capacity)
+# Risk level based on number of days over capacity
+if over_capacity_days == 0:
+    risk_text = "Low - No overcapacity predicted."
+elif over_capacity_days <= 2:
+    risk_text = f"Moderate - {over_capacity_days} days near limit."
+else:
+    risk_text = f"High - {over_capacity_days} days over capacity!"
+
+# Save JSON with both the table data and the risk summary
+output_data = {
+    "forecast": final_tuned_df.to_dict(orient="records"),
+    "shortage_risk": risk_text
+}
+
+import json
+with open("finaloccupancy.json", "w") as f:
+    json.dump(output_data, f)
 
 # Generate and Save Charts
 # 1. Demand Chart
