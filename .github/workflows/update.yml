@@ -1,25 +1,37 @@
-name: Update Forecasts
+name: 12-Hour Forecast Update
+
 on:
   schedule:
     - cron: "0 */12 * * *" # Runs every 12 hours
-  workflow_dispatch:        # Allows you to run it manually to test
+  workflow_dispatch:      # Allows you to click a button to run it manually
 
 jobs:
-  run-model:
+  build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write    # Gives the action permission to push files back to your repo
+
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout code
+        uses: actions/checkout@v3
+
       - name: Set up Python
         uses: actions/setup-python@v4
-        with: {python-version: '3.9'}
+        with:
+          python-version: '3.9'
+
       - name: Install dependencies
-        run: pip install pandas matplotlib seaborn scikit-learn xgboost
-      - name: Run script
-        run: python working_model.py
-      - name: Commit files
         run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git add .
-          git commit -m "Update forecast results" || exit 0
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Model
+        run: python working_model.py
+
+      - name: Commit and Push updates
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add outputs/ finaloccupancy.json
+          git commit -m "Automated Forecast Update: $(date)" || exit 0
           git push
