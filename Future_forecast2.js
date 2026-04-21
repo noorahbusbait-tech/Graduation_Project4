@@ -50,45 +50,35 @@ function logout(){
 }
 
 
-
-// load your JSON file
 fetch("finaloccupancy.json")
   .then(response => response.json())
   .then(data => {
+    // 1. Display the Shortage Risk
+    const riskBox = document.getElementById("patientPrediction");
+    riskBox.innerHTML = `<strong>Shortage Risk:</strong> <span>${data.shortage_risk}</span>`;
 
-    // 🔹 1. Fill table-like results
-    let box = document.getElementById("occupancyResults");
+    // 2. Display the Next Week's Table
+    const occupancyBox = document.getElementById("occupancyResults");
+    
+    // Create a simple table string
+    let tableHtml = `<strong>Next Week's Bed Occupancy:</strong>
+                     <table style="width:100%; margin-top:10px; border-collapse: collapse;">
+                        <tr style="border-bottom: 1px solid #ddd;">
+                            <th style="text-align:left;">Date</th>
+                            <th style="text-align:right;">Occupancy</th>
+                        </tr>`;
 
-    data.forEach(row => {
-      box.innerHTML += `
-        <p>${row.Date} → ${row.Tuned_Predicted_Occupancy}</p>
-      `;
+    data.forecast.forEach(row => {
+      // Round the occupancy for cleaner display
+      let roundedOcc = Math.round(row.Tuned_Predicted_Occupancy);
+      tableHtml += `
+        <tr style="border-bottom: 1px solid #eee;">
+            <td style="padding:5px 0;">${row.Date}</td>
+            <td style="padding:5px 0; text-align:right; font-weight:bold;">${roundedOcc} Beds</td>
+        </tr>`;
     });
 
-    // 🔹 2. Prepare data for chart
-    const labels = data.map(d => d.Date);
-    const values = data.map(d => d.Tuned_Predicted_Occupancy);
-
-    // 🔹 3. Draw chart
-    new Chart(document.getElementById("occupancyChart"), {
-      type: "line",
-      data: {
-        labels: labels,
-        datasets: [{
-          label: "Bed Occupancy",
-          data: values,
-          borderWidth: 2
-        }]
-      }
-    });
-
-    // 🔹 4. Example patient prediction (dummy for now)
-    document.getElementById("patientPrediction").innerHTML +=
-      "<p>Stable (Low Risk)</p>";
-
+    tableHtml += `</table>`;
+    occupancyBox.innerHTML = tableHtml;
   })
-  .catch(err => {
-    console.error(err);
-    document.getElementById("forecastStatus").innerText =
-      "Model Status: Error loading data";
-  });
+  .catch(err => console.error("Error loading forecast:", err));
