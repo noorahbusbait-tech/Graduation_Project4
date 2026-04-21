@@ -125,6 +125,10 @@ import json
 with open("finaloccupancy.json", "w") as f:
     json.dump(output_data, f)
 
+with open("outputs/finaloccupancy.json", "w") as f:
+    json.dump(output_data, f)
+
+
 # Generate and Save Charts
 # 1. Demand Chart
 plt.figure(figsize=(10, 5))
