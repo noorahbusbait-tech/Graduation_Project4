@@ -1,561 +1,95 @@
 # -*- coding: utf-8 -*-
 
 import os
-if not os.path.exists('outputs'):
-    os.makedirs('outputs')
-    
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.model_selection import train_test_split
-from sklearn.model_selection import train_test_split, cross_val_score
-from sklearn.preprocessing import StandardScaler, MinMaxScaler
 import numpy as np
+import xgboost as xgb
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.model_selection import train_test_split, TimeSeriesSplit, GridSearchCV
 
+# 1. Create directory for results
+if not os.path.exists('outputs'):
+    os.makedirs('outputs')
+
+# 2. Load Data
 df = pd.read_csv('cleandata.csv')
 
-"""### Time Series Data Preparation for 'LOS'"""
-
-# Convert 'Adm. Date/Time' to datetime objects and extract the date
+# 3. Data Prep
 df['Adm_Date'] = pd.to_datetime(df['Adm. Date/Time']).dt.date
-
-# Aggregate 'LOS' by date. We'll take the mean LOS per day.
 daily_los = df.groupby('Adm_Date')['LOS'].mean().reset_index()
 
-# Ensure all dates are present in the range by reindexing, filling missing values
-# We need to find the full date range first.
 min_date = daily_los['Adm_Date'].min()
 max_date = daily_los['Adm_Date'].max()
 date_range = pd.date_range(start=min_date, end=max_date, freq='D')
 
-daily_los = daily_los.set_index('Adm_Date').reindex(date_range).fillna(method='ffill').reset_index()
+# Updated fillna to modern pandas syntax
+daily_los = daily_los.set_index('Adm_Date').reindex(date_range).ffill().reset_index()
 daily_los = daily_los.rename(columns={'index': 'Adm_Date'})
 
-print("Daily LOS Time Series Head:")
-print(daily_los.head())
-print(f"\nTotal days in time series: {len(daily_los)}")
-
-"""#### Visualize the 'LOS' Time Series"""
-
-plt.figure(figsize=(14, 7))
-sns.lineplot(x='Adm_Date', y='LOS', data=daily_los)
-plt.title('Daily Average Length of Stay (LOS) Over Time')
-plt.xlabel('Admission Date')
-plt.ylabel('Average LOS')
-plt.grid(True)
-plt.xticks(rotation=45)
-plt.tight_layout()
-plt.show()
-
-"""### Time Series Model Preparation"""
-
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import mean_absolute_error, mean_squared_error
-
-# Create lagged features
+# --- Time Series Prep ---
 def create_lagged_features(df, column, num_lags):
     for i in range(1, num_lags + 1):
         df[f'{column}_lag_{i}'] = df[column].shift(i)
     return df
 
-# Apply lagged features to 'LOS'
-num_lags = 7 # Using the previous 7 days' LOS as features
+num_lags = 7
 daily_los_features = create_lagged_features(daily_los.copy(), 'LOS', num_lags)
-
-# Drop rows with NaN values resulting from lags (first 'num_lags' rows)
 daily_los_features.dropna(inplace=True)
 
-# Define features (X) and target (y)
 X = daily_los_features[[f'LOS_lag_{i}' for i in range(1, num_lags + 1)]]
 y = daily_los_features['LOS']
 
-# Determine the split point for training and testing
-# We want to predict the next three weeks, so the test set will be the last 21 days
 forecast_horizon = 21
-
 X_train = X.iloc[:-forecast_horizon]
-X_test = X.iloc[-forecast_horizon:]
 y_train = y.iloc[:-forecast_horizon]
-y_test = y.iloc[-forecast_horizon:]
 
-print(f"Training set size: {len(X_train)} days")
-print(f"Test set size (last {forecast_horizon} days for evaluation): {len(X_test)} days")
-print("\nFeatures head:")
-print(X.head())
-print("\nTarget head:")
-print(y.head())
-
-"""### Train and Evaluate Time Series Model"""
-
-# Initialize and train a RandomForestRegressor model
-# RandomForests are robust and can capture non-linear relationships in time series data
 model_ts = RandomForestRegressor(n_estimators=100, random_state=42)
 model_ts.fit(X_train, y_train)
 
-# Make predictions on the test set
-y_pred_test = model_ts.predict(X_test)
-
-# Evaluate the model using MAE and RMSE
-mae = mean_absolute_error(y_test, y_pred_test)
-rmse = np.sqrt(mean_squared_error(y_test, y_pred_test))
-
-print(f"Time Series Model Performance on Test Set (last {forecast_horizon} days):")
-print(f"Mean Absolute Error (MAE): {mae:.4f}")
-print(f"Root Mean Squared Error (RMSE): {rmse:.4f}")
-
-# Visualize the actual vs. predicted values for the test set
-plt.figure(figsize=(14, 7))
-plt.plot(y_test.index, y_test, label='Actual LOS', color='blue', marker='o')
-plt.plot(y_test.index, y_pred_test, label='Predicted LOS', color='red', linestyle='--', marker='x')
-plt.title('Actual vs. Predicted Daily Average LOS (Test Set)')
-plt.xlabel('Date')
-plt.ylabel('Average LOS')
-plt.legend()
-plt.grid(True)
-plt.xticks(rotation=45)
-plt.tight_layout()
-plt.show()
-
-"""### Forecast for the Next Two Weeks"""
-
-# To forecast beyond the available data, we need to iteratively predict.
-# We'll use the last 'num_lags' actual values to predict the first new value,
-# then use a rolling window of predictions to forecast subsequent values.
-
+# --- Forecasting ---
 last_known_data = daily_los['LOS'].tail(num_lags).tolist()
 future_predictions = []
 future_dates = pd.date_range(start=daily_los['Adm_Date'].max() + pd.Timedelta(days=1), periods=forecast_horizon, freq='D')
 
 for _ in range(forecast_horizon):
-    # Prepare the input for prediction (last 'num_lags' values)
     input_features = np.array(last_known_data[-num_lags:]).reshape(1, -1)
-
-    # Predict the next value
     next_pred = model_ts.predict(input_features)[0]
     future_predictions.append(next_pred)
-
-    # Update last_known_data with the new prediction for the next iteration
     last_known_data.append(next_pred)
 
-# Create a DataFrame for future predictions
 future_forecast_df = pd.DataFrame({'Adm_Date': future_dates, 'Forecasted_LOS': future_predictions})
 
-print("\nForecasted Daily Average LOS for the next two weeks:")
-print(future_forecast_df)
-
-# Visualize the historical data, test set predictions, and future forecast
-plt.figure(figsize=(16, 8))
-plt.plot(daily_los['Adm_Date'], daily_los['LOS'], label='Historical LOS', color='gray', alpha=0.7)
-plt.plot(y_test.index, y_test, label='Actual Test LOS', color='blue', marker='o', markersize=4)
-plt.plot(y_test.index, y_pred_test, label='Predicted Test LOS', color='red', linestyle='--', marker='x', markersize=4)
-plt.plot(future_forecast_df['Adm_Date'], future_forecast_df['Forecasted_LOS'], label='Future Forecast (2 weeks)', color='green', linestyle='-', marker='s', markersize=4)
-
-plt.title('Daily Average LOS: Historical, Test Predictions, and Future Forecast')
-plt.xlabel('Date')
-plt.ylabel('Average LOS')
-plt.legend()
-plt.grid(True)
-plt.xticks(rotation=45)
-plt.tight_layout()
-plt.show()
-
-plt.figure(figsize=(12, 6))
-sns.lineplot(x='Adm_Date', y='Forecasted_LOS', data=future_forecast_df, marker='o', color='green')
-plt.title('Forecasted Daily Average Length of Stay for the Next Two Weeks')
-plt.xlabel('Date')
-plt.ylabel('Forecasted Average LOS (days)')
-plt.grid(True)
-plt.xticks(rotation=45)
-plt.tight_layout()
-plt.show()
-
-"""### Evaluate Time Series Model Stability with Rolling Window"""
-
-from sklearn.model_selection import TimeSeriesSplit
-
-# Recreate the daily_los_features DataFrame, ensuring it's fresh for the split
-daily_los_features_stability = create_lagged_features(daily_los.copy(), 'LOS', num_lags)
-daily_los_features_stability.dropna(inplace=True)
-
-X_stability = daily_los_features_stability[[f'LOS_lag_{i}' for i in range(1, num_lags + 1)]]
-y_stability = daily_los_features_stability['LOS']
-
-# Define the rolling window parameters
-# We'll use a fixed initial training set size and then expand it by one step for each split
-n_splits = 5 # Number of splits to evaluate stability
-min_train_size = len(X_stability) - n_splits * forecast_horizon # Ensure enough data for initial train
-
-# TimeSeriesSplit generates indices for train/test sets based on time order
-tscv = TimeSeriesSplit(n_splits=n_splits, test_size=forecast_horizon)
-
-mae_scores = []
-rmse_scores = []
-
-print(f"Evaluating model stability using {n_splits} rolling windows, each forecasting {forecast_horizon} days.\n")
-
-for i, (train_index, test_index) in enumerate(tscv.split(X_stability)):
-    X_train_fold, X_test_fold = X_stability.iloc[train_index], X_stability.iloc[test_index]
-    y_train_fold, y_test_fold = y_stability.iloc[train_index], y_stability.iloc[test_index]
-
-    # Re-initialize and train the model for each fold
-    model_ts_fold = RandomForestRegressor(n_estimators=100, random_state=42)
-    model_ts_fold.fit(X_train_fold, y_train_fold)
-
-    # Make predictions
-    y_pred_fold = model_ts_fold.predict(X_test_fold)
-
-    # Evaluate
-    mae_fold = mean_absolute_error(y_test_fold, y_pred_fold)
-    rmse_fold = np.sqrt(mean_squared_error(y_test_fold, y_pred_fold))
-
-    mae_scores.append(mae_fold)
-    rmse_scores.append(rmse_fold)
-
-    print(f"Fold {i+1}:")
-    print(f"  Train size: {len(X_train_fold)}, Test size: {len(X_test_fold)}")
-    print(f"  MAE: {mae_fold:.4f}")
-    print(f"  RMSE: {rmse_fold:.4f}")
-
-print("\n--- Stability Results ---")
-print(f"Average MAE: {np.mean(mae_scores):.4f} (Std Dev: {np.std(mae_scores):.4f})")
-print(f"Average RMSE: {np.mean(rmse_scores):.4f} (Std Dev: {np.std(rmse_scores):.4f})")
-
-if np.mean(mae_scores) < 0.2 and np.mean(rmse_scores) < 0.3:
-    print("The model demonstrates good stability and accuracy across different time splits.")
-else:
-    print("The model's stability or accuracy might need further improvement. Consider exploring different model parameters or alternative time series models.")
-
-"""### Calculate Daily Bed Occupancy"""
-
-# 1. Calculate historical daily admission counts from the original dataframe
-daily_admissions_count = df.groupby('Adm_Date').size().reset_index(name='Admissions')
-
-# 2. Calculate the average daily admissions from the historical data
-average_daily_admissions = daily_admissions_count['Admissions'].mean()
-
-print(f"Average daily historical admissions: {average_daily_admissions:.2f}")
-
-# Prepare for simulation: Combine forecasted LOS with estimated daily admissions
-# Instead of a constant number, we will sample daily admissions from the historical distribution.
-
-# Initialize simulation state
-current_patients = [] # List of dictionaries: {'admission_date': date, 'predicted_los': float}
-occupied_beds_forecast = []
-
-# Simulate bed occupancy day by day over the forecast horizon
-for i, row in future_forecast_df.iterrows():
-    current_date = row['Adm_Date']
-    forecasted_los_today = row['Forecasted_LOS']
-
-    # Randomly sample the number of admissions for today from historical daily admission counts
-    # Using replacement to ensure statistical independence and sufficient samples
-    num_admissions_today = np.random.choice(daily_admissions_count['Admissions'].values)
-
-    # Simulate new admissions for today
-    for _ in range(num_admissions_today):
-        # For simplicity, assign the forecasted LOS of the admission day to these new patients
-        current_patients.append({
-            'admission_date': current_date,
-            'predicted_los': forecasted_los_today
-        })
-
-    # Simulate discharges for today
-    patients_to_keep = []
-    for patient in current_patients:
-        # Calculate discharge date based on admission date and predicted LOS
-        # Round LOS to the nearest whole day for discharge calculation
-        discharge_date = patient['admission_date'] + pd.Timedelta(days=round(patient['predicted_los']))
-
-        if current_date < discharge_date:
-            patients_to_keep.append(patient) # Patient is still in bed
-    current_patients = patients_to_keep
-
-    # Record occupied beds for the current day
-    occupied_beds_forecast.append({'Adm_Date': current_date, 'Occupied_Beds': len(current_patients)})
-
-occupied_beds_df = pd.DataFrame(occupied_beds_forecast)
-
-# Add total and available beds
-total_beds = 80 # As provided in the prompt
-occupied_beds_df['Total_Beds'] = total_beds
-occupied_beds_df['Available_Beds'] = occupied_beds_df['Total_Beds'] - occupied_beds_df['Occupied_Beds']
-
-print("\nForecasted Daily Bed Occupancy and Availability for the next three weeks:")
-print(occupied_beds_df)
-
-# Check for overcapacity and print warnings
-overcapacity_days = occupied_beds_df[occupied_beds_df['Available_Beds'] < 0]
-if not overcapacity_days.empty:
-    print("\n--- WARNING: Overcapacity Forecasted ---")
-    for _, row in overcapacity_days.iterrows():
-        print(f"On {row['Adm_Date'].strftime('%Y-%m-%d')}: {abs(row['Available_Beds'])} beds over capacity (Occupied: {row['Occupied_Beds']}, Total: {row['Total_Beds']})")
-else:
-    print("\nNo overcapacity forecasted for the next three weeks.")
-
-plt.figure(figsize=(14, 7))
-sns.lineplot(x='Adm_Date', y='Occupied_Beds', data=occupied_beds_df, marker='o', color='purple', label='Demanded Beds')
-sns.lineplot(x='Adm_Date', y='Available_Beds', data=occupied_beds_df, marker='o', color='orange', label='Available Beds')
-plt.axhline(y=total_beds, color='red', linestyle='--', label=f'Total Capacity ({total_beds} Beds)')
-plt.title('Forecasted Daily Bed Occupancy and Availability (Next Three Weeks)')
-plt.xlabel('Date')
-plt.ylabel('Number of Beds')
-plt.legend()
-plt.grid(True)
-plt.xticks(rotation=45)
-plt.tight_layout()
-plt.show()
-
-plt.savefig("demandchart.png"
-)
-
-import xgboost as xgb
-from sklearn.metrics import mean_absolute_error, mean_squared_error
-
-# 1. Prepare historical occupancy data for training
-# Ensure both dataframes have 'Adm_Date' in datetime format for merging
-daily_admissions_count['Adm_Date'] = pd.to_datetime(daily_admissions_count['Adm_Date'])
-
-daily_occ = daily_los.copy()
-daily_occ['Adm_Date'] = pd.to_datetime(daily_occ['Adm_Date'])
-daily_occ = daily_occ.rename(columns={'LOS': 'Avg_LOS'})
-
-# Merge admission counts into daily_occ
-daily_occ = daily_occ.merge(daily_admissions_count, on='Adm_Date', how='left').fillna(0)
-
-# Simple proxy for occupancy: Admissions * Avg_LOS
-daily_occ['Occupancy'] = (daily_occ['Admissions'] * daily_occ['Avg_LOS']).clip(upper=80)
-
-# 2. Feature Engineering: Lags for Occupancy
-num_lags_occ = 7
-for i in range(1, num_lags_occ + 1):
-    daily_occ[f'occ_lag_{i}'] = daily_occ['Occupancy'].shift(i)
-
-daily_occ.dropna(inplace=True)
-
-# 3. Split data
-X_occ = daily_occ[[f'occ_lag_{i}' for i in range(1, num_lags_occ + 1)]]
-y_occ = daily_occ['Occupancy']
-
-# Split: leave last 7 days for testing
-X_train_occ = X_occ.iloc[:-7]
-y_train_occ = y_occ.iloc[:-7]
-X_test_occ = X_occ.iloc[-7:]
-y_test_occ = y_occ.iloc[-7:]
-
-# 4. Train XGBoost
-xgb_model = xgb.XGBRegressor(n_estimators=100, learning_rate=0.1, max_depth=5, random_state=42)
-xgb_model.fit(X_train_occ, y_train_occ)
-
-# 5. Forecast for next week (7 days)
-last_occ_values = y_occ.tail(num_lags_occ).tolist()
-occ_forecast = []
-
-for _ in range(7):
-    inp = np.array(last_occ_values[-num_lags_occ:]).reshape(1, -1)
-    pred = xgb_model.predict(inp)[0]
-    pred = min(80, max(0, pred)) # Clip to capacity
-    occ_forecast.append(pred)
-    last_occ_values.append(pred)
-
-# Results
-forecast_dates = pd.date_range(start=daily_occ['Adm_Date'].max() + pd.Timedelta(days=1), periods=7)
-forecast_df = pd.DataFrame({'Date': forecast_dates, 'Predicted_Occupancy': occ_forecast})
-
-print("XGBoost Bed Occupancy Forecast for the Next Week:")
-display(forecast_df)
-
-plt.figure(figsize=(12, 6))
-plt.plot(forecast_df['Date'], forecast_df['Predicted_Occupancy'], marker='o', color='green', label='XGBoost Occupancy Prediction')
-plt.axhline(y=80, color='red', linestyle='--', label='80 Bed Capacity')
-plt.title('Predicted Bed Occupancy (Next 7 Days)')
-plt.ylabel('Number of Beds')
-plt.legend()
-plt.grid(True)
-plt.show()
-
-"""### Refined Bed Occupancy Calculation: True Daily Census
-Instead of a simple proxy, we will now calculate the exact number of patients in the hospital for every day by checking overlapping date ranges between admission and discharge.
-"""
-
-import pandas as pd
-import numpy as np
-
-# 1. Prepare patient stay ranges
-# Use 'Adm. Date/Time' and 'DSC Time Clean' (or approximate from LOS if clean is missing)
+# --- True Census Logic ---
 temp_df = df.copy()
 temp_df['Entry'] = pd.to_datetime(temp_df['Adm. Date/Time'])
-# If DSC Time Clean is null, estimate it using LOS
 temp_df['Exit'] = pd.to_datetime(temp_df['DSC Time Clean'])
 mask = temp_df['Exit'].isna()
 temp_df.loc[mask, 'Exit'] = temp_df.loc[mask, 'Entry'] + pd.to_timedelta(temp_df.loc[mask, 'LOS'], unit='D')
 
-# 2. Generate a full range of dates present in the data
-start_date = temp_df['Entry'].min().date()
-end_date = temp_df['Entry'].max().date()
-all_dates = pd.date_range(start=start_date, end=end_date)
-
-# 3. Calculate Census for each day
-census_data = []
-for d in all_dates:
-    # A patient is in a bed if they were admitted on or before 'd' AND discharged after 'd'
-    count = ((temp_df['Entry'].dt.date <= d.date()) & (temp_df['Exit'].dt.date > d.date())).sum()
-    census_data.append({'Date': d, 'True_Occupancy': count})
-
+all_dates = pd.date_range(start=temp_df['Entry'].min().date(), end=temp_df['Entry'].max().date())
+census_data = [{'Date': d, 'True_Occupancy': ((temp_df['Entry'].dt.date <= d.date()) & (temp_df['Exit'].dt.date > d.date())).sum()} for d in all_dates]
 daily_census_df = pd.DataFrame(census_data)
 
-print("Refined Daily Census (First 10 days):")
-display(daily_census_df.head(10))
-
-plt.figure(figsize=(14, 6))
-plt.plot(daily_census_df['Date'], daily_census_df['True_Occupancy'], color='teal')
-plt.axhline(y=80, color='red', linestyle='--', label='80 Bed Capacity')
-plt.title('True Historical Daily Bed Occupancy (Census)')
-plt.ylabel('Number of Occupied Beds')
-plt.legend()
-plt.show()
-
-"""### Retraining XGBoost with True Census Data"""
-
-# 1. Feature Engineering with Lags on True Occupancy
+# --- Final XGBoost Model ---
 num_lags_census = 7
 for i in range(1, num_lags_census + 1):
     daily_census_df[f'census_lag_{i}'] = daily_census_df['True_Occupancy'].shift(i)
-
 daily_census_df.dropna(inplace=True)
 
-# 2. Split Data
 X_census = daily_census_df[[f'census_lag_{i}' for i in range(1, num_lags_census + 1)]]
 y_census = daily_census_df['True_Occupancy']
 
-X_train_c = X_census.iloc[:-7]
-y_train_c = y_census.iloc[:-7]
-X_test_c = X_census.iloc[-7:]
-y_test_c = y_census.iloc[-7:]
-
-# 3. Retrain XGBoost
-xgb_census_model = xgb.XGBRegressor(n_estimators=100, learning_rate=0.05, max_depth=6, random_state=42)
-xgb_census_model.fit(X_train_c, y_train_c)
-
-# 4. Forecast Next 7 Days
-last_census_values = y_census.tail(num_lags_census).tolist()
-census_forecast = []
-
-for _ in range(7):
-    inp = np.array(last_census_values[-num_lags_census:]).reshape(1, -1)
-    pred = xgb_census_model.predict(inp)[0]
-    pred = min(80, max(0, pred))
-    census_forecast.append(pred)
-    last_census_values.append(pred)
-
-# 5. Visualize Results
-forecast_dates_c = pd.date_range(start=daily_census_df['Date'].max() + pd.Timedelta(days=1), periods=7)
-final_forecast_df = pd.DataFrame({'Date': forecast_dates_c, 'Refined_Predicted_Occupancy': census_forecast})
-
-print("Refined XGBoost Bed Occupancy Forecast:")
-display(final_forecast_df)
-
-plt.figure(figsize=(12, 6))
-plt.plot(final_forecast_df['Date'], final_forecast_df['Refined_Predicted_Occupancy'], marker='s', color='darkgreen', label='Refined Forecast')
-plt.axhline(y=80, color='red', linestyle='--')
-plt.title('Refined Bed Occupancy Forecast (Next 7 Days)')
-plt.ylabel('Occupied Beds')
-plt.grid(True)
-plt.show()
-
-"""### Evaluating Refined XGBoost Stability with TimeSeriesSplit
-We will use 5-fold time-series cross-validation to assess how the model performs as the training window expands.
-"""
-
-from sklearn.model_selection import TimeSeriesSplit
-import xgboost as xgb
-
-# 1. Initialize TimeSeriesSplit
-tscv_census = TimeSeriesSplit(n_splits=5, test_size=7)
-
-mae_scores_c = []
-rmse_scores_c = []
-
-print(f"Evaluating refined XGBoost stability using 5 rolling windows (7-day test sets):\n")
-
-for i, (train_index, test_index) in enumerate(tscv_census.split(X_census)):
-    X_train_fold, X_test_fold = X_census.iloc[train_index], X_census.iloc[test_index]
-    y_train_fold, y_test_fold = y_census.iloc[train_index], y_census.iloc[test_index]
-
-    # Re-initialize and train
-    fold_model = xgb.XGBRegressor(n_estimators=100, learning_rate=0.05, max_depth=6, random_state=42)
-    fold_model.fit(X_train_fold, y_train_fold)
-
-    # Predict
-    preds = fold_model.predict(X_test_fold)
-
-    # Metrics
-    mae_f = mean_absolute_error(y_test_fold, preds)
-    rmse_f = np.sqrt(mean_squared_error(y_test_fold, preds))
-
-    mae_scores_c.append(mae_f)
-    rmse_scores_c.append(rmse_f)
-
-    print(f"Fold {i+1}:")
-    print(f"  Train size: {len(X_train_fold)}, Test size: {len(X_test_fold)}")
-    print(f"  MAE: {mae_f:.4f}")
-    print(f"  RMSE: {rmse_f:.4f}")
-
-print("\n--- Refined Model Stability Results ---")
-print(f"Average MAE: {np.mean(mae_scores_c):.4f} (Std Dev: {np.std(mae_scores_c):.4f})")
-print(f"Average RMSE: {np.mean(rmse_scores_c):.4f} (Std Dev: {np.std(rmse_scores_c):.4f})")
-
-"""### Hyperparameter Tuning for Refined XGBoost
-We'll use `GridSearchCV` with `TimeSeriesSplit` to find the optimal parameters for our census-based occupancy model.
-"""
-
-from sklearn.model_selection import GridSearchCV
-
-# 1. Define the parameter grid
-param_grid = {
-    'n_estimators': [50, 100, 200],
-    'max_depth': [3, 5, 7],
-    'learning_rate': [0.01, 0.05, 0.1],
-    'subsample': [0.8, 1.0]
-}
-
-# 2. Initialize the XGBoost regressor
-xgb_tune = xgb.XGBRegressor(random_state=42)
-
-# 3. Initialize TimeSeriesSplit for CV
-tscv_tune = TimeSeriesSplit(n_splits=5, test_size=7)
-
-# 4. Run Grid Search
-grid_search = GridSearchCV(estimator=xgb_tune, param_grid=param_grid,
-                           cv=tscv_tune, scoring='neg_mean_absolute_error',
-                           verbose=1)
-
-grid_search.fit(X_census, y_census)
-
-# 5. Extract Best Parameters and Score
-best_params = grid_search.best_params_
-best_score = -grid_search.best_score_
-
-print(f"\nBest Hyperparameters: {best_params}")
-print(f"Best Cross-Validation MAE: {best_score:.4f}")
-
-"""### Finalizing Model with Best Parameters
-Now we re-train the model on the full training set using the best parameters found during tuning.
-"""
-
-# Retrain with best parameters
+# Tuned Hyperparameters from your previous run
+best_params = {'learning_rate': 0.05, 'max_depth': 5, 'n_estimators': 100, 'subsample': 0.8}
 final_xgb_model = xgb.XGBRegressor(**best_params, random_state=42)
-final_xgb_model.fit(X_train_c, y_train_c)
+final_xgb_model.fit(X_census, y_census)
 
-# Evaluate on the hold-out test set
-final_preds = final_xgb_model.predict(X_test_c)
-final_mae = mean_absolute_error(y_test_c, final_preds)
-
-print(f"Final Model MAE on Hold-out Test Set: {final_mae:.4f}")
-
-# Generate an updated 7-day forecast
+# Generate Final 7-Day Forecast
 last_vals = y_census.tail(num_lags_census).tolist()
 final_forecast = []
-
 for _ in range(7):
     inp_arr = np.array(last_vals[-num_lags_census:]).reshape(1, -1)
     p = final_xgb_model.predict(inp_arr)[0]
@@ -564,74 +98,31 @@ for _ in range(7):
     last_vals.append(p)
 
 final_forecast_dates = pd.date_range(start=daily_census_df['Date'].max() + pd.Timedelta(days=1), periods=7)
-final_tuned_df['Date'] = final_tuned_df['Date'].astype(str)
+final_tuned_df = pd.DataFrame({'Date': final_forecast_dates.astype(str), 'Tuned_Predicted_Occupancy': final_forecast})
 
-display(final_tuned_df)
+# --- Save Outputs ---
+print("Final Forecast Results:")
+print(final_tuned_df)
+
+# Save JSON for the website
 final_tuned_df.to_json("finaloccupancy.json", orient="records")
 
-"""### Final Occupancy Forecast Visualization
-Visualizing the tuned XGBoost predictions for the next 7 days against the facility's 80-bed capacity.
-"""
+# Generate and Save Charts
+# 1. Demand Chart
+plt.figure(figsize=(10, 5))
+plt.plot(future_forecast_df['Adm_Date'], future_forecast_df['Forecasted_LOS'], color='green', marker='o')
+plt.title('Daily Average LOS Forecast')
+plt.savefig("outputs/demandchart.png")
+plt.close()
 
-import matplotlib.pyplot as plt
-import seaborn as sns
-
-plt.figure(figsize=(12, 6))
-sns.lineplot(x='Date', y='Tuned_Predicted_Occupancy', data=final_tuned_df, marker='o', color='darkgreen', label='Predicted Occupancy (Tuned)')
-plt.axhline(y=80, color='red', linestyle='--', linewidth=2, label='Total Capacity (80 Beds)')
-
-# Adding labels and titles
-plt.title('7-Day Refined Bed Occupancy Forecast', fontsize=14)
-plt.xlabel('Date', fontsize=12)
-plt.ylabel('Number of Occupied Beds', fontsize=12)
-plt.ylim(0, 90) # Start from 0 to show scale relative to capacity
-plt.grid(True, linestyle=':', alpha=0.6)
+# 2. Occupancy Chart
+plt.figure(figsize=(10, 5))
+plt.plot(final_tuned_df['Date'], final_tuned_df['Tuned_Predicted_Occupancy'], color='darkgreen', marker='o')
+plt.axhline(y=80, color='red', linestyle='--', label='80 Bed Capacity')
+plt.title('7-Day Bed Occupancy Forecast')
 plt.xticks(rotation=45)
-plt.legend(loc='upper right')
 plt.tight_layout()
-plt.show()
+plt.savefig("outputs/occupancychart.png")
+plt.close()
 
-plt.savefig("occupancychart.png"
-)
-
-"""### Cross-Validation of the Tuned Model
-We will now evaluate the stability of the tuned XGBoost model using the same 5-fold TimeSeriesSplit used previously to provide a direct comparison.
-"""
-
-from sklearn.model_selection import TimeSeriesSplit
-from sklearn.metrics import mean_absolute_error, mean_squared_error
-import numpy as np
-import xgboost as xgb
-
-# 1. Initialize TimeSeriesSplit (matching previous evaluation)
-tscv_final = TimeSeriesSplit(n_splits=5, test_size=7)
-
-tuned_mae_scores = []
-tuned_rmse_scores = []
-
-print(f"Evaluating Tuned XGBoost stability (Best Params: {best_params}):\n")
-
-for i, (train_index, test_index) in enumerate(tscv_final.split(X_census)):
-    X_train_fold, X_test_fold = X_census.iloc[train_index], X_census.iloc[test_index]
-    y_train_fold, y_test_fold = y_census.iloc[train_index], y_census.iloc[test_index]
-
-    # Initialize with best parameters
-    fold_model = xgb.XGBRegressor(**best_params, random_state=42)
-    fold_model.fit(X_train_fold, y_train_fold)
-
-    # Predict and Evaluate
-    preds = fold_model.predict(X_test_fold)
-    mae_f = mean_absolute_error(y_test_fold, preds)
-    rmse_f = np.sqrt(mean_squared_error(y_test_fold, preds))
-
-    tuned_mae_scores.append(mae_f)
-    tuned_rmse_scores.append(rmse_f)
-
-    print(f"Fold {i+1}: MAE = {mae_f:.4f}, RMSE = {rmse_f:.4f}")
-
-# 2. Comparison Summary
-print("\n--- Comparison: Refined Model vs. Tuned Model ---")
-print(f"Previous Avg MAE: {np.mean(mae_scores_c):.4f} (Std: {np.std(mae_scores_c):.4f})")
-print(f"Tuned Avg MAE:    {np.mean(tuned_mae_scores):.4f} (Std: {np.std(tuned_mae_scores):.4f})")
-print(f"\nPrevious Avg RMSE: {np.mean(rmse_scores_c):.4f} (Std: {np.std(rmse_scores_c):.4f})")
-print(f"Tuned Avg RMSE:    {np.mean(tuned_rmse_scores):.4f} (Std: {np.std(tuned_rmse_scores):.4f})")
+print("All charts and data saved to outputs/ and root.")
