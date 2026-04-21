@@ -50,35 +50,35 @@ function logout(){
 }
 
 
-fetch("finaloccupancy.json")
+fetch("outputs/finaloccupancy.json")
   .then(response => response.json())
   .then(data => {
-    // 1. Display the Shortage Risk
+    // 1. Update Shortage Risk Box
     const riskBox = document.getElementById("patientPrediction");
-    riskBox.innerHTML = `<strong>Shortage Risk:</strong> <span>${data.shortage_risk}</span>`;
+    if(riskBox && data.shortage_risk) {
+        riskBox.innerHTML = `<strong>Shortage Risk:</strong> <span style="color: #d9534f;">${data.shortage_risk}</span>`;
+    }
 
-    // 2. Display the Next Week's Table
+    // 2. Update the Table Box
     const occupancyBox = document.getElementById("occupancyResults");
-    
-    // Create a simple table string
-    let tableHtml = `<strong>Next Week's Bed Occupancy:</strong>
-                     <table style="width:100%; margin-top:10px; border-collapse: collapse;">
-                        <tr style="border-bottom: 1px solid #ddd;">
-                            <th style="text-align:left;">Date</th>
-                            <th style="text-align:right;">Occupancy</th>
-                        </tr>`;
+    if(occupancyBox && data.forecast) {
+        let tableHtml = `<strong>Next Week's Bed Occupancy:</strong>
+                         <table style="width:100%; margin-top:10px; border-collapse: collapse; font-size: 0.9em;">
+                            <tr style="border-bottom: 2px solid #333;">
+                                <th style="text-align:left; padding: 8px;">Date</th>
+                                <th style="text-align:right; padding: 8px;">Occupied</th>
+                            </tr>`;
 
-    data.forecast.forEach(row => {
-      // Round the occupancy for cleaner display
-      let roundedOcc = Math.round(row.Tuned_Predicted_Occupancy);
-      tableHtml += `
-        <tr style="border-bottom: 1px solid #eee;">
-            <td style="padding:5px 0;">${row.Date}</td>
-            <td style="padding:5px 0; text-align:right; font-weight:bold;">${roundedOcc} Beds</td>
-        </tr>`;
-    });
-
-    tableHtml += `</table>`;
-    occupancyBox.innerHTML = tableHtml;
+        data.forecast.forEach(row => {
+            let roundedOcc = Math.round(row.Tuned_Predicted_Occupancy);
+            tableHtml += `
+                <tr style="border-bottom: 1px solid #eee;">
+                    <td style="padding:8px;">${row.Date}</td>
+                    <td style="padding:8px; text-align:right; font-weight:bold;">${roundedOcc} Beds</td>
+                </tr>`;
+        });
+        tableHtml += `</table>`;
+        occupancyBox.innerHTML = tableHtml;
+    }
   })
-  .catch(err => console.error("Error loading forecast:", err));
+  .catch(err => console.error("Error loading JSON:", err));
